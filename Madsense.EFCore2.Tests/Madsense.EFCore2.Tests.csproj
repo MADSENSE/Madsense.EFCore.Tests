@@ -2,8 +2,10 @@
 
   <PropertyGroup>
     <TargetFramework>netcoreapp3.1</TargetFramework>
-
+    <LangVersion>latest</LangVersion>
     <IsPackable>false</IsPackable>
+
+    <RootNamespace>Madsense.EFCore.Tests</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

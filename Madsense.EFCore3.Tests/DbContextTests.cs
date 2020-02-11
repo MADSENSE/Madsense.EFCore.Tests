@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Xunit;
@@ -7,8 +8,10 @@ namespace Madsense.EFCore.Tests
 {
     public class DbContextTests
     {
-        [Fact]
-        public async Task AppContextTest()
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task RecursiveIncludeTest(bool trackingEnabled)
         {
             // Prepare
             var options = new DbContextOptionsBuilder<AppContext>()
@@ -20,13 +23,13 @@ namespace Madsense.EFCore.Tests
                 await initContext.Database.EnsureDeletedAsync();
                 await initContext.Database.EnsureCreatedAsync();
 
-                await initContext.BasicModels.AddRangeAsync(
-                    new BasicModel
+                await initContext.Products.AddRangeAsync(
+                    new Product
                     {
-                        Childs =
+                        Id = 2,
+                        Items =
                         {
-                            new ChildModel(),
-                            new ChildModel()
+                            new ProductItem { ChildProductId = 2 }
                         }
                     });
                 await initContext.SaveChangesAsync();
@@ -34,16 +37,25 @@ namespace Madsense.EFCore.Tests
 
             // Act
             using var testContext = new AppContext(options);
+            testContext.ChangeTracker.QueryTrackingBehavior = trackingEnabled ? QueryTrackingBehavior.TrackAll : QueryTrackingBehavior.NoTracking;
+            var products = await testContext.Products.Include(p => p.Items).ThenInclude(i => i.ChildProduct).ToArrayAsync();
 
             // Assert
-            Assert.Single(await testContext.BasicModels.ToListAsync());
+            var product = Assert.Single(products);
+            Assert.Equal(2, product.Id);
+            var item = Assert.Single(product.Items);
+            Assert.NotNull(item.Product);
+            Assert.NotNull(item.ChildProduct);
+            Assert.Equal(2, item.ChildProduct.Id);
+            Assert.NotEmpty(item.ChildProduct.Items);       // (EF3 Failed-NoTracking) Check recursive object populated
+            Assert.Contains(item.ChildProduct, products);   // (EF3 Failed-NoTracking) Check it's same instance
         }
     }
 
     public class AppContext : DbContext
     {
-        public DbSet<BasicModel> BasicModels { get; protected set; }
-        public DbSet<ChildModel> ChildModels { get; protected set; }
+        public DbSet<Product> Products { get; protected set; }
+        public DbSet<ProductItem> ProductItems { get; protected set; }
 
         public AppContext(DbContextOptions<AppContext> options)
             : base(options)
@@ -55,34 +67,39 @@ namespace Madsense.EFCore.Tests
         {
             base.OnModelCreating(builder);
 
-            builder.Entity<BasicModel>(entity =>
+            builder.Entity<Product>(entity =>
             {
                 entity.HasKey(e => e.Id);
-
-                entity.HasMany(e => e.Childs)
-                    .WithOne(e => e.Basic)
-                    .HasForeignKey(e => e.BasicModelId);
             });
 
-            builder.Entity<ChildModel>(entity =>
+            builder.Entity<ProductItem>(entity =>
             {
                 entity.HasKey(e => e.Id);
+
+                entity.HasOne(e => e.Product)
+                    .WithMany(e => e.Items)
+                    .HasForeignKey(e => e.ProductId);
+                entity.HasOne(e => e.ChildProduct)
+                    .WithMany()
+                    .HasForeignKey(e => e.ChildProductId);
             });
         }
     }
 
-    public class BasicModel
+    public class Product
     {
         public int Id { get; set; }
 
-        public ICollection<ChildModel> Childs { get; } = new HashSet<ChildModel>();
+        public ICollection<ProductItem> Items { get; } = new ObservableHashSet<ProductItem>();
     }
 
-    public class ChildModel
+    public class ProductItem
     {
         public int Id { get; set; }
-        public int BasicModelId { get; set; }
+        public int ProductId { get; set; }
+        public int? ChildProductId { get; set; }
 
-        public BasicModel Basic { get; set; }
+        public Product Product { get; set; }
+        public Product ChildProduct { get; set; }
     }
 }
