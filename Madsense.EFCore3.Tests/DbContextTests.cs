@@ -12,10 +12,10 @@ namespace Madsense.EFCore.Tests
     {
         [Theory]
         [InlineData(ServiceLifetime.Singleton, false, 1, 10)]
-        [InlineData(ServiceLifetime.Transient, false, 2, 10)]
-        [InlineData(ServiceLifetime.Singleton, false, 2, 10)]
-        [InlineData(ServiceLifetime.Transient, true, 2, 10)]
-        [InlineData(ServiceLifetime.Singleton, true, 2, 10)]
+        [InlineData(ServiceLifetime.Transient, false, 3, 10)]
+        [InlineData(ServiceLifetime.Singleton, false, 3, 10)] // SQLite Error 1: 'cannot rollback - no transaction is active'.
+        [InlineData(ServiceLifetime.Transient, true, 3, 10)]
+        [InlineData(ServiceLifetime.Singleton, true, 3, 10)] // SQLite Error 1: 'cannot start a transaction within a transaction'.
         public async Task Sqlite_ConcurrentSave_Test(ServiceLifetime optionsLifeTime, bool openConnection, int concurrentSaveCount, int insertOperationsCount)
         {
             // Prepare
@@ -84,7 +84,6 @@ namespace Madsense.EFCore.Tests
     public class BasicModel
     {
         public int Id { get; set; }
-
         public string Name { get; set; }
     }
 }
