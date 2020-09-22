@@ -11,11 +11,11 @@ namespace Madsense.EFCore.Tests
     public class DbContextTests
     {
         [Theory]
-        [InlineData(ServiceLifetime.Singleton, false, 1, 10)]
-        [InlineData(ServiceLifetime.Transient, false, 3, 10)]
-        [InlineData(ServiceLifetime.Singleton, false, 3, 10)] // SQLite Error 1: 'cannot rollback - no transaction is active'.
-        [InlineData(ServiceLifetime.Transient, true, 3, 10)]
-        [InlineData(ServiceLifetime.Singleton, true, 3, 10)] // SQLite Error 1: 'cannot start a transaction within a transaction'.
+        [InlineData(ServiceLifetime.Singleton, false, 1, 100)]
+        [InlineData(ServiceLifetime.Transient, false, 3, 100)]
+        [InlineData(ServiceLifetime.Singleton, false, 3, 100)] // SQLite Error 1: 'cannot rollback - no transaction is active'.
+        [InlineData(ServiceLifetime.Transient, true, 3, 100)]
+        [InlineData(ServiceLifetime.Singleton, true, 3, 100)] // SQLite Error 1: 'cannot start a transaction within a transaction'.
         public async Task Sqlite_ConcurrentSave_Test(ServiceLifetime optionsLifeTime, bool openConnection, int concurrentSaveCount, int insertOperationsCount)
         {
             // Prepare
@@ -57,6 +57,54 @@ namespace Madsense.EFCore.Tests
             // Assert
             await using var assertContext = serviceProvider.GetRequiredService<AppContext>();
             Assert.Equal(concurrentSaveCount*insertOperationsCount, assertContext.BasicModels.Count());
+        }
+
+        [Theory]
+        [InlineData(ServiceLifetime.Singleton, false, 1, 100)]
+        [InlineData(ServiceLifetime.Transient, false, 3, 100)]
+        [InlineData(ServiceLifetime.Singleton, false, 3, 100)] // SafeHandle cannot be null. (Parameter 'pHandle')
+        [InlineData(ServiceLifetime.Transient, true, 3, 100)]
+        [InlineData(ServiceLifetime.Singleton, true, 3, 100)]
+        public async Task Sqlite_ConcurrentRead_Test(ServiceLifetime optionsLifeTime, bool openConnection, int concurrentReadCount, int readOperationsCount)
+        {
+            // Prepare
+            var serviceCollection = new ServiceCollection();
+            var connectionString = $"Filename={Guid.NewGuid()}.db";
+
+            serviceCollection.AddDbContext<AppContext>((s, builder) =>
+            {
+                var connection = new SqliteConnection(connectionString);
+
+                if (openConnection)
+                    connection.Open();
+
+                builder.UseSqlite(connection);
+            }, ServiceLifetime.Transient, optionsLifeTime);
+            var serviceProvider = serviceCollection.BuildServiceProvider();
+
+            await using (var initContext = serviceProvider.GetRequiredService<AppContext>())
+            {
+                await initContext.Database.EnsureCreatedAsync();
+                await initContext.AddRangeAsync(Enumerable.Range(0, readOperationsCount).Select(i => new BasicModel{Name = Guid.NewGuid().ToString()}));
+                await initContext.SaveChangesAsync();
+            }
+            
+            // Act
+            var addDataFunc = new Func<Task>(async () =>
+            {
+                for (var i = 0; i < readOperationsCount; i++)
+                {
+                    await using var context = serviceProvider.GetRequiredService<AppContext>();
+                    {
+                        await context.BasicModels.ToArrayAsync();
+                    }
+                }
+            });
+
+            var concurrentTasks = Enumerable.Range(0, concurrentReadCount).Select(i => Task.Run(() => addDataFunc()));
+            await Task.WhenAll(concurrentTasks);
+            
+            // Assert
         }
     }
 
