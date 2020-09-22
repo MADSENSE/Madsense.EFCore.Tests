@@ -1,49 +1,68 @@
-﻿using Microsoft.EntityFrameworkCore;
-using System.Collections.Generic;
+﻿using System;
+using Microsoft.EntityFrameworkCore;
+using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Madsense.EFCore.Tests
 {
     public class DbContextTests
     {
-        [Fact]
-        public async Task AppContextTest()
+        [Theory]
+        [InlineData(ServiceLifetime.Singleton, false, 1, 10)]
+        [InlineData(ServiceLifetime.Transient, false, 2, 10)]
+        [InlineData(ServiceLifetime.Singleton, false, 2, 10)]
+        [InlineData(ServiceLifetime.Transient, true, 2, 10)]
+        [InlineData(ServiceLifetime.Singleton, true, 2, 10)]
+        public async Task Sqlite_ConcurrentSave_Test(ServiceLifetime optionsLifeTime, bool openConnection, int concurrentSaveCount, int insertOperationsCount)
         {
             // Prepare
-            var options = new DbContextOptionsBuilder<AppContext>()
-                .UseSqlite("Data Source=myTestDatabase.db")
-                .Options;
+            var serviceCollection = new ServiceCollection();
+            var connectionString = $"Filename={Guid.NewGuid()}.db";
 
-            using (var initContext = new AppContext(options))
+            serviceCollection.AddDbContext<AppContext>((s, builder) =>
             {
-                await initContext.Database.EnsureDeletedAsync();
-                await initContext.Database.EnsureCreatedAsync();
+                var connection = new SqliteConnection(connectionString);
 
-                await initContext.BasicModels.AddRangeAsync(
-                    new BasicModel
-                    {
-                        Childs =
-                        {
-                            new ChildModel(),
-                            new ChildModel()
-                        }
-                    });
-                await initContext.SaveChangesAsync();
+                if (openConnection)
+                    connection.Open();
+
+                builder.UseSqlite(connection);
+            }, ServiceLifetime.Transient, optionsLifeTime);
+            var serviceProvider = serviceCollection.BuildServiceProvider();
+
+            await using (var initContext = serviceProvider.GetRequiredService<AppContext>())
+            {
+                await initContext.Database.EnsureCreatedAsync();
             }
 
             // Act
-            using var testContext = new AppContext(options);
+            var addDataFunc = new Func<Task>(async () =>
+            {
+                for (var i = 0; i < insertOperationsCount; i++)
+                {
+                    await using var context = serviceProvider.GetRequiredService<AppContext>();
+                    {
+                        await context.AddAsync(new BasicModel{Name = Guid.NewGuid().ToString()});
+                        await context.SaveChangesAsync();
+                    }
+                }
+            });
 
+            var concurrentTasks = Enumerable.Range(0, concurrentSaveCount).Select(i => Task.Run(() => addDataFunc()));
+            await Task.WhenAll(concurrentTasks);
+            
             // Assert
-            Assert.Single(await testContext.BasicModels.ToListAsync());
+            await using var assertContext = serviceProvider.GetRequiredService<AppContext>();
+            Assert.Equal(concurrentSaveCount*insertOperationsCount, assertContext.BasicModels.Count());
         }
     }
 
     public class AppContext : DbContext
     {
         public DbSet<BasicModel> BasicModels { get; protected set; }
-        public DbSet<ChildModel> ChildModels { get; protected set; }
 
         public AppContext(DbContextOptions<AppContext> options)
             : base(options)
@@ -58,15 +77,6 @@ namespace Madsense.EFCore.Tests
             builder.Entity<BasicModel>(entity =>
             {
                 entity.HasKey(e => e.Id);
-
-                entity.HasMany(e => e.Childs)
-                    .WithOne(e => e.Basic)
-                    .HasForeignKey(e => e.BasicModelId);
-            });
-
-            builder.Entity<ChildModel>(entity =>
-            {
-                entity.HasKey(e => e.Id);
             });
         }
     }
@@ -75,14 +85,6 @@ namespace Madsense.EFCore.Tests
     {
         public int Id { get; set; }
 
-        public ICollection<ChildModel> Childs { get; } = new HashSet<ChildModel>();
-    }
-
-    public class ChildModel
-    {
-        public int Id { get; set; }
-        public int BasicModelId { get; set; }
-
-        public BasicModel Basic { get; set; }
+        public string Name { get; set; }
     }
 }
